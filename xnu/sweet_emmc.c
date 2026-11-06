@@ -1069,6 +1069,10 @@ static const struct cdevsw sweet_emmc_cdevsw = {
 /* Root device for rd=emmcroot0 (IOFindBSDRoot). */
 int sweet_emmc_rootdev(dev_t *dev);
 
+/* Brings the controller up and registers the disk; called from the root
+ * device hook the first time the kernel is told to root on the eMMC. */
+int sweet_emmc_init(void);
+
 int
 sweet_emmc_rootdev(dev_t *dev)
 {
