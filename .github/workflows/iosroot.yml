@@ -1,0 +1,104 @@
+name: iosroot
+
+# Build the iOS 16 root filesystem for the OCEAN port.
+#
+# The iOS system volumes live inside the iPhone X IPSW as APFS images
+# whose files are LZBITMAP-compressed, so they have to be read through
+# apfs-fuse.  apfs-fuse is a Linux FUSE filesystem and is not packaged
+# for Windows, so the root image is built here on an Ubuntu runner and
+# the result is downloaded.
+#
+# The iOS files are Apple's and are never committed: the IPSW has to be
+# uploaded as a workflow artifact or fetched from a URL that the user
+# provides.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipsw_url:
+        description: 'URL of the iPhone X iOS 16.7.16 IPSW (leave empty to use the artifact below)'
+        required: false
+        default: ''
+      root_size:
+        description: 'Size of the HFS+ root image'
+        required: false
+        default: '16G'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git fuse3 libfuse3-dev zlib1g-dev \
+            hfsprogs rsync xattr python3-pip
+
+      - name: Build apfs-fuse
+        run: |
+          cd "$RUNNER_TEMP"
+          git clone --depth 1 https://github.com/sgan81/apfs-fuse.git
+          cd apfs-fuse
+          make
+          sudo make install
+          # apfs-fuse needs FUSE; the runner can use it without a mount
+          # namespace of its own.
+          sudo modprobe fuse || true
+          ls -la /usr/local/bin/apfs-fuse || true
+
+      - name: Fetch the IPSW
+        env:
+          IPSW_URL: ${{ inputs.ipsw_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ipsw"
+          cd "$RUNNER_TEMP/ipsw"
+          if [ -n "$IPSW_URL" ]; then
+            echo "downloading $IPSW_URL"
+            curl -L --fail --retry 3 -o ipsw.ipsw "$IPSW_URL"
+          else
+            echo "::error::no IPSW URL given; pass one with the ipsw_url input"
+            exit 1
+          fi
+          ls -la ipsw.ipsw
+          unzip -l ipsw.ipsw | grep -E "\.dmg$|BuildManifest.plist" | head -20
+
+      - name: Build the HFS+ iOS root
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/ipsw"
+          unzip -q ipsw.ipsw '*.dmg' 'BuildManifest.plist'
+
+          # The three images the root is made of.  The names come from
+          # the BuildManifest: the OS is 087-86698-044.dmg, the SystemOS
+          # cryptex is 087-86593-047.dmg and the AppOS cryptex is
+          # 087-86715-047.dmg for this build.
+          OS=$(ls 087-86698-044.dmg)
+          SYSOS=$(ls 087-86593-047.dmg)
+          APPOS=$(ls 087-86715-047.dmg)
+
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p out-ocean-root
+          bash tools/mkiosroot.sh \
+            "$RUNNER_TEMP/ipsw/$OS" \
+            "$RUNNER_TEMP/ipsw/$SYSOS" \
+            "$RUNNER_TEMP/ipsw/$APPOS" \
+            out-ocean-root/ios16-root.img "${{ inputs.root_size }}"
+
+          # The sparse image is what fastboot wants.
+          which img2simg || (sudo apt-get install -y android-sdk-libsparse-utils || true)
+          img2simg out-ocean-root/ios16-root.img out-ocean-root/ios16-root.simg
+          ls -la out-ocean-root/
+          (cd out-ocean-root && sha256sum * > SHA256SUMS)
+
+      - name: Upload the iOS root
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocean-ios-root
+          path: out-ocean-root/
+          if-no-files-found: warn
+          retention-days: 7
