@@ -1,0 +1,77 @@
+From: ocean-port <ocean-port@example.org>
+Subject: [PATCH] OCEAN: let the Xcode 26 iig build xnu-8796
+
+The GitHub macOS runners no longer carry an Xcode old enough to build
+xnu-8796.  Xcode 16 and newer ship an "iig" whose generated code
+initialises an IORPC with a field this kernel does not have:
+
+    DriverKit/OSObject.iig.cpp:362:133: error: field designator
+    'kernelContent' does not refer to any field in type 'IORPC'
+
+The upstream workflow notes the same problem: "macos-14 still ships
+Xcode 15.x: its iig matches the xnu-8796 IORPC ABI (Xcode 16's iig
+emits IORPC.kernelContent, which this xnu lacks)".  Apple removed the
+old Xcode from the hosted images, so the driver has to grow the field
+instead.
+
+Xcode's generated code uses it like this:
+
+    .sendSize = sizeof(buf.msg), .replySize = sizeof(buf.rpl),
+    .kernelContent = &buf.msg.content.__hdr
+
+so the field is a pointer to the header of the message content, which
+is an IORPCMessage.  Adding it to the struct lets the generated code
+compile; nothing in this kernel uses the field, because the DriverKit
+RPC machinery is not part of the phone build.
+
+There are two copies of IORPC.h in the tree, iokit/DriverKit/IORPC.h and
+iokit/IOKit/IORPC.h, and both need the field.
+
+Co-Authored-By: ocean-port <ocean-port@example.org>
+---
+diff --git a/iokit/DriverKit/IORPC.h b/iokit/DriverKit/IORPC.h
+--- a/iokit/DriverKit/IORPC.h
++++ b/iokit/DriverKit/IORPC.h
+@@ -224,6 +224,19 @@
+ 	IORPCMessageMach * reply;
+ 	uint32_t           sendSize;
+ 	uint32_t           replySize;
++	/*
++	 * Xcode 16 and newer generate an initialiser that names this
++	 * field:
++	 *
++	 *     .sendSize = sizeof(buf.msg), .replySize = sizeof(buf.rpl),
++	 *     .kernelContent = &buf.msg.content.__hdr
++	 *
++	 * The hosted macOS images no longer carry an Xcode old enough to
++	 * build this kernel, so the field has to exist.  It points at the
++	 * header of the message content; nothing in the phone build uses
++	 * it, because the DriverKit RPC machinery is not part of it.
++	 */
++	IORPCMessage      * kernelContent;
+ };
+ typedef struct IORPC IORPC;
+ 
+diff --git a/iokit/IOKit/IORPC.h b/iokit/IOKit/IORPC.h
+--- a/iokit/IOKit/IORPC.h
++++ b/iokit/IOKit/IORPC.h
+@@ -224,6 +224,19 @@
+ 	IORPCMessageMach * reply;
+ 	uint32_t           sendSize;
+ 	uint32_t           replySize;
++	/*
++	 * Xcode 16 and newer generate an initialiser that names this
++	 * field:
++	 *
++	 *     .sendSize = sizeof(buf.msg), .replySize = sizeof(buf.rpl),
++	 *     .kernelContent = &buf.msg.content.__hdr
++	 *
++	 * The hosted macOS images no longer carry an Xcode old enough to
++	 * build this kernel, so the field has to exist.  It points at the
++	 * header of the message content; nothing in the phone build uses
++	 * it, because the DriverKit RPC machinery is not part of it.
++	 */
++	IORPCMessage      * kernelContent;
+ };
+ typedef struct IORPC IORPC;
+ 
