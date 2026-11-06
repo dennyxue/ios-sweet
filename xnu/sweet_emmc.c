@@ -1066,15 +1066,19 @@ static const struct cdevsw sweet_emmc_cdevsw = {
 /* Root device hook                                                  */
 /* ---------------------------------------------------------------- */
 
-/*
- * Called by IOKitBSDInit when the kernel is told to root on "emmcroot0".
- */
+/* Root device for rd=emmcroot0 (IOFindBSDRoot). */
+int sweet_emmc_rootdev(dev_t *dev);
+
 int
 sweet_emmc_rootdev(dev_t *dev)
 {
-	extern dev_t dev_emu;
-
-	*dev = dev_emu;
+	if (!em.ready) {
+		int error = sweet_emmc_init();
+		if (error) {
+			return error;
+		}
+	}
+	*dev = em.bdev;
 	return 0;
 }
 

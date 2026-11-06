@@ -32,6 +32,7 @@
 /* SDHCI registers. */
 #define REG_SYSAD	0x00
 #define REG_PRNSTS	0x08
+#define REG_HOSTCTL	0x1c
 #define REG_PWRCON	0x20
 #define REG_CLK_CONTROL	0x24
 #define REG_SWRST	0x28

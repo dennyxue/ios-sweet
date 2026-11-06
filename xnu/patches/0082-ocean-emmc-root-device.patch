@@ -69,7 +69,7 @@ diff --git a/bsd/dev/sweet_emmc.c b/bsd/dev/sweet_emmc.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_emmc.c
-@@ -0,0 +1,1175 @@
+@@ -0,0 +1,1179 @@
 +/*
 + * SWEET / OCEAN internal eMMC root device.
 + *
@@ -1138,15 +1138,19 @@ new file mode 100644
 +/* Root device hook                                                  */
 +/* ---------------------------------------------------------------- */
 +
-+/*
-+ * Called by IOKitBSDInit when the kernel is told to root on "emmcroot0".
-+ */
++/* Root device for rd=emmcroot0 (IOFindBSDRoot). */
++int sweet_emmc_rootdev(dev_t *dev);
++
 +int
 +sweet_emmc_rootdev(dev_t *dev)
 +{
-+	extern dev_t dev_emu;
-+
-+	*dev = dev_emu;
++	if (!em.ready) {
++		int error = sweet_emmc_init();
++		if (error) {
++			return error;
++		}
++	}
++	*dev = em.bdev;
 +	return 0;
 +}
 +
