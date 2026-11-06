@@ -72,7 +72,13 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+        run: |
+          set -o pipefail
+          bash build.sh 2>&1 | tee ../build.log | tail -200
+          echo "=== errors in build.log ==="
+          grep -E "error:|Error [0-9]|\*\*\*" ../build.log | head -60 || true
+          echo "=== build.log size ==="
+          wc -l ../build.log
 
       - name: Package build tree for local compiles
         if: always()
@@ -108,6 +114,14 @@ jobs:
           done
           ls -la out/kdk-libs
 
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
+
       - name: Collect
         if: always()
         run: |
@@ -131,46 +145,56 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
-          # mkbootimg is not in Homebrew, so it is not needed here: the
-          # boot image is assembled on the host with tools/mkbootimg or
-          # by hand.  Only the bare-metal shim is built here.
           brew install aarch64-elf-gcc aarch64-elf-binutils || true
 
           cd shim
           mkdir -p out
-
-          # Prefer the aarch64-linux-gnu cross compiler the shim's
-          # build.sh expects; fall back to Homebrew's aarch64-elf-gcc.
-          CC=""
-          OBJCOPY=""
-          for cand in aarch64-linux-gnu-gcc aarch64-none-elf-gcc aarch64-elf-gcc; do
-            if command -v "$cand" >/dev/null 2>&1; then
-              CC="$cand"
-              OBJCOPY="$(echo "$cand" | sed 's/gcc$/objcopy/')"
-              break
-            fi
-          done
+          # Keep every compiler message: the log is truncated otherwise.
+          {
+            for cand in aarch64-linux-gnu-gcc aarch64-none-elf-gcc aarch64-elf-gcc; do
+              if command -v "$cand" >/dev/null 2>&1; then
+                echo "CC=$cand"
+                break
+              fi
+            done
+          } > /tmp/cc.txt
+          CC=$(sed -n 's/^CC=//p' /tmp/cc.txt)
+          echo "using CC=$CC"
           if [ -z "$CC" ]; then
             echo "::error::no aarch64 cross compiler found"
             exit 1
           fi
-          "$CC" --version | head -1
+          "$CC" --version 2>&1 | head -2
+
+          OBJCOPY="$(echo "$CC" | sed 's/gcc$/objcopy/')"
           CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra"
-          ok=1
+
+          # Compile each file separately and keep going, so one bad file
+          # does not hide the others.
+          rm -f out/*.o
           for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c emmc.c; do
-            "$CC" $CFLAGS -c "$f" -o "out/${f%.*}.o" || ok=0
+            echo "=== CC $f ==="
+            "$CC" $CFLAGS -c "$f" -o "out/${f%.*}.o" 2>&1 | head -40
+            echo "exit=$?"
           done
-          if [ "$ok" != 1 ]; then
-            echo "::error::shim compile failed"
-            exit 1
+          echo "=== objects ==="
+          ls -la out/
+
+          if [ -f out/emmc.o ]; then
+            echo "=== LINK ==="
+            "$CC" $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
+              out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/emmc.o \
+              -o out/shim.elf 2>&1 | head -30
+            if [ -f out/shim.elf ]; then
+              "$OBJCOPY" -O binary out/shim.elf out/Image
+              size=$(nm out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
+              truncate -s "$size" out/Image
+              echo "=== built ==="
+              ls -la out/Image
+            fi
+          else
+            echo "::error::emmc.o was not produced"
           fi
-          "$CC" $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
-            out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/emmc.o \
-            -o out/shim.elf
-          "$OBJCOPY" -O binary out/shim.elf out/Image
-          size=$(nm out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
-          truncate -s "$size" out/Image
-          ls -la out/Image
 
 
       - name: Package the OCEAN shim
