@@ -69,7 +69,7 @@ diff --git a/bsd/dev/sweet_emmc.c b/bsd/dev/sweet_emmc.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_emmc.c
-@@ -0,0 +1,1183 @@
+@@ -0,0 +1,1212 @@
 +/*
 + * SWEET / OCEAN internal eMMC root device.
 + *
@@ -319,10 +319,21 @@ new file mode 100644
 + * bits.  The SDM710 SDHC has no fractional divider, so 400 kHz (the
 + * identification rate) is divider 0x0 for a 100 MHz core clock.
 + */
++/*
++ * Program the SD bus clock.
++ *
++ * The SDHCI 3.0 clock divider is 10 bits wide and the value written is
++ * the divisor minus one.  Above 25 MHz the divisor has to be a multiple
++ * of two, so the search steps by two; below that any divisor is
++ * allowed, which is what makes the 400 kHz identification clock
++ * reachable at all (a 200 MHz core needs a divisor of 500, and the
++ * 10-bit field can express that).
++ */
 +static int
 +emmc_set_clock(uint32_t hz, uint32_t core_hz)
 +{
 +	uint32_t div, ctrl;
++	uint16_t clk;
 +
 +	if (core_hz == 0) {
 +		return EINVAL;
@@ -330,23 +341,41 @@ new file mode 100644
 +	if (hz > core_hz) {
 +		hz = core_hz;
 +	}
-+	div = core_hz / hz;
-+	if (div == 0) {
-+		div = 1;
++
++	if (core_hz <= 25000000) {
++		/* Any divisor is fine below 25 MHz. */
++		for (div = 1; div <= 1024; div++) {
++			if ((core_hz / div) <= hz) {
++				break;
++			}
++		}
++	} else {
++		/* Above 25 MHz the divisor must be a multiple of two. */
++		for (div = 2; div <= 1024; div += 2) {
++			if ((core_hz / div) <= hz) {
++				break;
++			}
++		}
 +	}
-+	/* The divider field is 3 bits wide (0x0 = /1). */
-+	if (div > 8) {
-+		div = 8;
++	if (div > 1024) {
++		div = 1024;
 +	}
 +
-+	/* Disable the clock while changing the divider. */
++	/* Turn the clock off while the divider changes. */
 +	ctrl = emmc_r32(SDHCI_CLK_CONTROL);
 +	ctrl &= ~(SDHCI_CLK_INT_EN | SDHCI_CLK_SDCLK_EN);
 +	emmc_w32(SDHCI_CLK_CONTROL, ctrl);
-+	emmc_w16(SDHCI_CLK_CONTROL,
-+	    (uint16_t)((emmc_r16(SDHCI_CLK_CONTROL) & ~SDHCI_CLK_INT_DIV_MASK) |
-+	    SDHCI_CLK_INT_DIV(div - 1)));
++
++	/*
++	 * The register holds the divisor minus one: the low 8 bits go to
++	 * bits 8-15 and the high 2 bits to bits 6-7.
++	 */
++	clk = (uint16_t)(div - 1);
 +	ctrl = emmc_r32(SDHCI_CLK_CONTROL);
++	ctrl &= ~(SDHCI_CLK_DIV_MASK | SDHCI_CLK_DIV_HI_MASK);
++	ctrl |= ((uint32_t)clk & SDHCI_CLK_DIV_MASK) << SDHCI_CLK_DIV_SHIFT;
++	ctrl |= (((uint32_t)clk >> SDHCI_CLK_DIV_MASK_LEN) & 0x3)
++	    << SDHCI_CLK_DIV_HI_SHIFT;
 +	ctrl |= SDHCI_CLK_INT_EN | SDHCI_CLK_SDCLK_EN;
 +	emmc_w32(SDHCI_CLK_CONTROL, ctrl);
 +
@@ -1257,7 +1286,7 @@ diff --git a/bsd/dev/sweet_emmc.h b/bsd/dev/sweet_emmc.h
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_emmc.h
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,233 @@
 +/*
 + * SWEET / OCEAN internal eMMC root device.
 + *
@@ -1348,9 +1377,20 @@ new file mode 100644
 +#define SDHCI_CTRL_ADMA		0x08
 +#define SDHCI_CTRL_1V8		0x10	/* 1.8 V signalling */
 +
-+/* Clock control (0x24) */
-+#define SDHCI_CLK_INT_DIV_MASK	0x0003
-+#define SDHCI_CLK_INT_DIV(n)	((n) & SDHCI_CLK_INT_DIV_MASK)
++/*
++ * Clock control (0x24).
++ *
++ * In the SDHCI 3.0 layout the bus clock divider is 10 bits wide:
++ * bits 8-15 hold the low 8 bits and bits 6-7 the high 2.  The value
++ * written is the divider minus one, and it must be even, because the
++ * controller divides by (value + 1) and the specification requires the
++ * divisor to be a multiple of two above 25 MHz.
++ */
++#define SDHCI_CLK_DIV_MASK	0x00ff		/* bits 8-15 */
++#define SDHCI_CLK_DIV_SHIFT	8
++#define SDHCI_CLK_DIV_MASK_LEN	8
++#define SDHCI_CLK_DIV_HI_MASK	0x0300		/* bits 6-7 */
++#define SDHCI_CLK_DIV_HI_SHIFT	6
 +#define SDHCI_CLK_INT_EN	0x0004
 +#define SDHCI_CLK_STABLE	0x0008
 +#define SDHCI_CLK_SDCLK_EN	0x0010

@@ -247,10 +247,21 @@ emmc_wait_clock_stable(void)
  * bits.  The SDM710 SDHC has no fractional divider, so 400 kHz (the
  * identification rate) is divider 0x0 for a 100 MHz core clock.
  */
+/*
+ * Program the SD bus clock.
+ *
+ * The SDHCI 3.0 clock divider is 10 bits wide and the value written is
+ * the divisor minus one.  Above 25 MHz the divisor has to be a multiple
+ * of two, so the search steps by two; below that any divisor is
+ * allowed, which is what makes the 400 kHz identification clock
+ * reachable at all (a 200 MHz core needs a divisor of 500, and the
+ * 10-bit field can express that).
+ */
 static int
 emmc_set_clock(uint32_t hz, uint32_t core_hz)
 {
 	uint32_t div, ctrl;
+	uint16_t clk;
 
 	if (core_hz == 0) {
 		return EINVAL;
@@ -258,23 +269,41 @@ emmc_set_clock(uint32_t hz, uint32_t core_hz)
 	if (hz > core_hz) {
 		hz = core_hz;
 	}
-	div = core_hz / hz;
-	if (div == 0) {
-		div = 1;
+
+	if (core_hz <= 25000000) {
+		/* Any divisor is fine below 25 MHz. */
+		for (div = 1; div <= 1024; div++) {
+			if ((core_hz / div) <= hz) {
+				break;
+			}
+		}
+	} else {
+		/* Above 25 MHz the divisor must be a multiple of two. */
+		for (div = 2; div <= 1024; div += 2) {
+			if ((core_hz / div) <= hz) {
+				break;
+			}
+		}
 	}
-	/* The divider field is 3 bits wide (0x0 = /1). */
-	if (div > 8) {
-		div = 8;
+	if (div > 1024) {
+		div = 1024;
 	}
 
-	/* Disable the clock while changing the divider. */
+	/* Turn the clock off while the divider changes. */
 	ctrl = emmc_r32(SDHCI_CLK_CONTROL);
 	ctrl &= ~(SDHCI_CLK_INT_EN | SDHCI_CLK_SDCLK_EN);
 	emmc_w32(SDHCI_CLK_CONTROL, ctrl);
-	emmc_w16(SDHCI_CLK_CONTROL,
-	    (uint16_t)((emmc_r16(SDHCI_CLK_CONTROL) & ~SDHCI_CLK_INT_DIV_MASK) |
-	    SDHCI_CLK_INT_DIV(div - 1)));
+
+	/*
+	 * The register holds the divisor minus one: the low 8 bits go to
+	 * bits 8-15 and the high 2 bits to bits 6-7.
+	 */
+	clk = (uint16_t)(div - 1);
 	ctrl = emmc_r32(SDHCI_CLK_CONTROL);
+	ctrl &= ~(SDHCI_CLK_DIV_MASK | SDHCI_CLK_DIV_HI_MASK);
+	ctrl |= ((uint32_t)clk & SDHCI_CLK_DIV_MASK) << SDHCI_CLK_DIV_SHIFT;
+	ctrl |= (((uint32_t)clk >> SDHCI_CLK_DIV_MASK_LEN) & 0x3)
+	    << SDHCI_CLK_DIV_HI_SHIFT;
 	ctrl |= SDHCI_CLK_INT_EN | SDHCI_CLK_SDCLK_EN;
 	emmc_w32(SDHCI_CLK_CONTROL, ctrl);
 

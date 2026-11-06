@@ -88,9 +88,20 @@
 #define SDHCI_CTRL_ADMA		0x08
 #define SDHCI_CTRL_1V8		0x10	/* 1.8 V signalling */
 
-/* Clock control (0x24) */
-#define SDHCI_CLK_INT_DIV_MASK	0x0003
-#define SDHCI_CLK_INT_DIV(n)	((n) & SDHCI_CLK_INT_DIV_MASK)
+/*
+ * Clock control (0x24).
+ *
+ * In the SDHCI 3.0 layout the bus clock divider is 10 bits wide:
+ * bits 8-15 hold the low 8 bits and bits 6-7 the high 2.  The value
+ * written is the divider minus one, and it must be even, because the
+ * controller divides by (value + 1) and the specification requires the
+ * divisor to be a multiple of two above 25 MHz.
+ */
+#define SDHCI_CLK_DIV_MASK	0x00ff		/* bits 8-15 */
+#define SDHCI_CLK_DIV_SHIFT	8
+#define SDHCI_CLK_DIV_MASK_LEN	8
+#define SDHCI_CLK_DIV_HI_MASK	0x0300		/* bits 6-7 */
+#define SDHCI_CLK_DIV_HI_SHIFT	6
 #define SDHCI_CLK_INT_EN	0x0004
 #define SDHCI_CLK_STABLE	0x0008
 #define SDHCI_CLK_SDCLK_EN	0x0010
