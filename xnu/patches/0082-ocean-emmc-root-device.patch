@@ -69,7 +69,7 @@ diff --git a/bsd/dev/sweet_emmc.c b/bsd/dev/sweet_emmc.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_emmc.c
-@@ -0,0 +1,1170 @@
+@@ -0,0 +1,1175 @@
 +/*
 + * SWEET / OCEAN internal eMMC root device.
 + *
@@ -137,7 +137,9 @@ new file mode 100644
 +
 +#include "sweet_emmc.h"
 +
++/* osfmk/arm/machine_routines.h, not exported to the BSD layer */
 +extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
 +
 +/*
 + * DMA bounce buffer size.  One MiB matches sweet_ufs.c; eMMC blocks are
@@ -429,9 +431,12 @@ new file mode 100644
 + * Issue one MMC command and optionally transfer data.
 + *
 + * resp_type:  EMMC_RSP_NONE / _SHORT / _LONG / _SHORT_BUSY
-+ * flags:      SDHCI_CMD_DATA, SDHCI_CMD_WRITE
++ * flags:      SDHCI_CMD_DATA (a data transfer follows)
 + * has_index:  the response carries the command index (CMD7, CMD18, ...)
 + * has_crc:    the response is protected by a CRC7
++ * write:      the transfer writes to the card; the direction is taken
++ *             from the transfer mode register, not from the command
++ *             register
 + *
 + * The response type, the index bit and the CRC bit all live in the same
 + * few bits of the command register, so they are kept as separate
@@ -441,7 +446,8 @@ new file mode 100644
 + */
 +static int
 +emmc_cmd(uint32_t index, uint32_t arg, uint32_t resp_type, uint32_t flags,
-+    bool has_index, bool has_crc, void *data, uint32_t len, uint32_t *resp)
++    bool has_index, bool has_crc, bool write, void *data, uint32_t len,
++    uint32_t *resp)
 +{
 +	uint32_t cmd_reg = 0;
 +	uint32_t present;
@@ -502,7 +508,6 @@ new file mode 100644
 +	}
 +
 +	if (flags & SDHCI_CMD_DATA) {
-+		bool write = (flags & SDHCI_CMD_WRITE) != 0;
 +		uint64_t desc_pa = em.dma_pa + DMA_DESC;
 +
 +		emmc_build_adma(em.dma_pa + DMA_BOUNCE, len, write);
@@ -594,7 +599,7 @@ new file mode 100644
 +			    index, status);
 +			return EIO;
 +		}
-+		if (!(flags & SDHCI_CMD_WRITE)) {
++		if (!write) {
 +			dma_inv(DMA_BOUNCE, len);
 +		}
 +	}
@@ -630,7 +635,7 @@ new file mode 100644
 +		int error;
 +
 +		error = emmc_cmd(MMC_SEND_OP_COND, host_ocr | OCR_HCS, EMMC_RSP_SHORT,
-+		    0, false, false, NULL, 0, resp);
++		    0, false, false, false, NULL, 0, resp);
 +		if (error) {
 +			return error;
 +		}
@@ -657,7 +662,7 @@ new file mode 100644
 +	int error;
 +
 +	error = emmc_cmd(MMC_SEND_EXT_CSD, em.rca << 16, EMMC_RSP_SHORT,
-+	    SDHCI_CMD_DATA | SDHCI_CMD_READ, false, true, out, 512, resp);
++	    SDHCI_CMD_DATA, false, true, false, out, 512, resp);
 +	if (error) {
 +		return error;
 +	}
@@ -688,7 +693,7 @@ new file mode 100644
 +	emmc_w8(SDHCI_HOSTCTL, SDHCI_CTRL_8BIT | SDHCI_CTRL_ADMA);
 +
 +	/* CMD0: go idle. */
-+	error = emmc_cmd(MMC_GO_IDLE, 0, EMMC_RSP_NONE, 0, false, false, NULL, 0, NULL);
++	error = emmc_cmd(MMC_GO_IDLE, 0, EMMC_RSP_NONE, 0, false, false, false, NULL, 0, NULL);
 +	if (error) {
 +		printf("SWEET EMMC: CMD0 failed\n");
 +		return error;
@@ -708,7 +713,7 @@ new file mode 100644
 +	printf("SWEET EMMC: CMD1 ocr 0x%08x\n", ocr);
 +
 +	/* CMD2: get the CID. */
-+	error = emmc_cmd(MMC_ALL_SEND_CID, 0, EMMC_RSP_LONG, 0, false, false, NULL, 0, resp);
++	error = emmc_cmd(MMC_ALL_SEND_CID, 0, EMMC_RSP_LONG, 0, false, false, false, NULL, 0, resp);
 +	if (error) {
 +		printf("SWEET EMMC: CMD2 failed\n");
 +		return error;
@@ -721,7 +726,7 @@ new file mode 100644
 +	    (em.cid[1] >> 8) & 0xff, em.cid[1] & 0xff);
 +
 +	/* CMD3: assign a relative address. */
-+	error = emmc_cmd(MMC_SET_RELATIVE_ADDR, 1, EMMC_RSP_SHORT, 0, false, false, NULL, 0, resp);
++	error = emmc_cmd(MMC_SET_RELATIVE_ADDR, 1, EMMC_RSP_SHORT, 0, false, false, false, NULL, 0, resp);
 +	if (error) {
 +		printf("SWEET EMMC: CMD3 failed\n");
 +		return error;
@@ -729,7 +734,7 @@ new file mode 100644
 +	em.rca = resp[0] >> 16;
 +
 +	/* CMD9: read the CSD. */
-+	error = emmc_cmd(MMC_SEND_CSD, em.rca << 16, EMMC_RSP_LONG, 0, false, false, NULL, 0, resp);
++	error = emmc_cmd(MMC_SEND_CSD, em.rca << 16, EMMC_RSP_LONG, 0, false, false, false, NULL, 0, resp);
 +	if (error) {
 +		printf("SWEET EMMC: CMD9 failed\n");
 +		return error;
@@ -738,7 +743,7 @@ new file mode 100644
 +
 +	/* CMD7: select the card. */
 +	error = emmc_cmd(MMC_SELECT_CARD, em.rca << 16, EMMC_RSP_SHORT_BUSY,
-+	    0, true, true, NULL, 0, resp);
++	    0, true, true, false, NULL, 0, resp);
 +	if (error) {
 +		printf("SWEET EMMC: CMD7 failed\n");
 +		return error;
@@ -777,7 +782,7 @@ new file mode 100644
 +	/* Set the block length to 512 bytes for byte addressing. */
 +	if (!em.blockaddr) {
 +		error = emmc_cmd(MMC_SET_BLOCKLEN, EMMC_SEC_SIZE, EMMC_RSP_SHORT,
-+		    0, false, true, NULL, 0, resp);
++		    0, false, true, false, NULL, 0, resp);
 +		if (error) {
 +			printf("SWEET EMMC: CMD16 failed\n");
 +			return error;
@@ -816,7 +821,7 @@ new file mode 100644
 +		for (i = 0; i < count; i++) {
 +			error = emmc_cmd(MMC_READ_SINGLE_BLOCK,
 +			    (uint32_t)((lba + i) * EMMC_SEC_SIZE), EMMC_RSP_SHORT,
-+			    SDHCI_CMD_DATA | SDHCI_CMD_READ, false, true,
++			    SDHCI_CMD_DATA, false, true, false,
 +			    (void *)(em.dma + DMA_BOUNCE), EMMC_SEC_SIZE, resp);
 +			if (error) {
 +				return error;
@@ -827,14 +832,14 @@ new file mode 100644
 +
 +	/* Sector addressing: CMD18 reads multiple blocks. */
 +	error = emmc_cmd(MMC_READ_MULTIPLE_BLOCK, (uint32_t)lba, EMMC_RSP_SHORT,
-+	    SDHCI_CMD_DATA | SDHCI_CMD_READ, true, true,
++	    SDHCI_CMD_DATA, true, true, false,
 +	    (void *)(em.dma + DMA_BOUNCE), count * EMMC_SEC_SIZE, resp);
 +	if (error) {
 +		return error;
 +	}
 +	/* CMD12 stops the multiple-block read. */
 +	error = emmc_cmd(MMC_STOP_TRANSMISSION, 0, EMMC_RSP_SHORT_BUSY,
-+	    0, true, true, NULL, 0, resp);
++	    0, true, true, false, NULL, 0, resp);
 +	return error;
 +}
 +
@@ -857,7 +862,7 @@ new file mode 100644
 +		for (i = 0; i < count; i++) {
 +			error = emmc_cmd(MMC_WRITE_MULTIPLE_BLOCK,
 +			    (uint32_t)((lba + i) * EMMC_SEC_SIZE), EMMC_RSP_SHORT,
-+			    SDHCI_CMD_DATA | SDHCI_CMD_WRITE, false, true,
++			    SDHCI_CMD_DATA, false, true, true,
 +			    (void *)(em.dma + DMA_BOUNCE), EMMC_SEC_SIZE, resp);
 +			if (error) {
 +				return error;
@@ -867,13 +872,13 @@ new file mode 100644
 +	}
 +
 +	error = emmc_cmd(MMC_WRITE_MULTIPLE_BLOCK, (uint32_t)lba, EMMC_RSP_SHORT,
-+	    SDHCI_CMD_DATA | SDHCI_CMD_WRITE, true, true,
++	    SDHCI_CMD_DATA, true, true, true,
 +	    (void *)(em.dma + DMA_BOUNCE), count * EMMC_SEC_SIZE, resp);
 +	if (error) {
 +		return error;
 +	}
 +	error = emmc_cmd(MMC_STOP_TRANSMISSION, 0, EMMC_RSP_SHORT_BUSY,
-+	    0, true, true, NULL, 0, resp);
++	    0, true, true, false, NULL, 0, resp);
 +	return error;
 +}
 +
@@ -1244,7 +1249,7 @@ diff --git a/bsd/dev/sweet_emmc.h b/bsd/dev/sweet_emmc.h
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_emmc.h
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,222 @@
 +/*
 + * SWEET / OCEAN internal eMMC root device.
 + *
@@ -1374,10 +1379,14 @@ new file mode 100644
 + * Command register flags (0x0c).
 + *
 + * The response type lives in bits 1:0, the CRC check in bit 2, the index
-+ * in bit 3, "data present" in bit 4, "write" in bit 5.  Note that the
-+ * response-type encodings overlap with the flag bits above, so the two
-+ * must never be OR'ed into the same word -- the driver keeps them apart
-+ * and assembles the final value in one place.
++ * in bit 3, "data present" in bit 4 and the direction in bit 5.  Note
++ * that the response-type encodings overlap with the flag bits above, so
++ * the two must never be OR'ed into the same word -- the driver keeps
++ * them apart and assembles the final value in one place.
++ *
++ * There is no SDHCI_CMD_READ: the direction of a data transfer is taken
++ * from the transfer mode register (0x0e), not from the command
++ * register.  Linux's sdhci.c works the same way.
 + */
 +#define SDHCI_CMD_RESP_NONE	0x00000000
 +#define SDHCI_CMD_RESP_SHORT	0x00000004	/* bit 2: 35 bit response */
@@ -1386,7 +1395,6 @@ new file mode 100644
 +#define SDHCI_CMD_CRC		0x00000004	/* bit 2: CRC check present */
 +#define SDHCI_CMD_INDEX		0x00000008	/* bit 3: response carries index */
 +#define SDHCI_CMD_DATA		0x00000010	/* bit 4: data present */
-+#define SDHCI_CMD_WRITE		0x00000020	/* bit 5: direction */
 +
 +/*
 + * Response kinds, as used by the driver's emmc_cmd() resp_type argument.
