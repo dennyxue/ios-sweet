@@ -35,20 +35,30 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential git fuse3 libfuse3-dev zlib1g-dev \
+            build-essential cmake git fuse3 libfuse3-dev zlib1g-dev \
+            libbz2-dev libattr1-dev bzip2 \
             hfsprogs rsync xattr python3-pip
 
       - name: Build apfs-fuse
         run: |
+          set -euo pipefail
           cd "$RUNNER_TEMP"
-          git clone --depth 1 https://github.com/sgan81/apfs-fuse.git
+          # apfs-fuse has no Makefile: it is a CMake project, and the
+          # LZFSE library it uses is a git submodule, so a plain
+          # "git clone --depth 1" is not enough.
+          git clone --recurse-submodules https://github.com/sgan81/apfs-fuse.git
           cd apfs-fuse
-          make
-          sudo make install
-          # apfs-fuse needs FUSE; the runner can use it without a mount
-          # namespace of its own.
+          git submodule update --init --recursive
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j"$(nproc)"
+          # The FUSE filesystem needs the kernel module.
           sudo modprobe fuse || true
-          ls -la /usr/local/bin/apfs-fuse || true
+          ls -la
+          find . -name 'apfs-fuse' -type f -o -name 'apfs-fuse*' -type f | head
+          find . -name 'apfs-fuse' -type f -perm -u+x -exec cp {} /usr/local/bin/ \;
+          apfs-fuse --help 2>&1 | head -5 || true
 
       - name: Fetch the IPSW
         env:
