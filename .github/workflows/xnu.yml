@@ -122,3 +122,52 @@ jobs:
           name: xnu-kernel
           path: out/
           if-no-files-found: warn
+
+      # Build the boot shim for the OCEAN board (Redmi Note 2S / SDM710).
+      # The shim is bare-metal ARM64 code; it needs a cross compiler and
+      # mkbootimg, both of which the macOS runner can provide.
+      - name: Build the OCEAN boot shim
+        if: always()
+        run: |
+          set -euo pipefail
+          brew install aarch64-elf-gcc aarch64-elf-binutils ccache || true
+          brew install mkbootimg || true
+
+          cd shim
+          CC=aarch64-linux-gnu-gcc
+          OBJCOPY=aarch64-linux-gnu-objcopy
+          if ! command -v "$CC" >/dev/null 2>&1; then
+            # Homebrew's aarch64-elf-gcc installs as aarch64-none-elf-gcc.
+            CC=aarch64-none-elf-gcc
+            OBJCOPY=aarch64-none-elf-objcopy
+          fi
+          "$CC" --version | head -1
+          CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra"
+          mkdir -p out
+          for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c emmc.c; do
+            "$CC" $CFLAGS -c "$f" -o "out/${f%.*}.o"
+          done
+          "$CC" $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
+            out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/ufs.o out/emmc.o \
+            -o out/shim.elf
+          "$OBJCOPY" -O binary out/shim.elf out/Image
+          size=$("$CC" --version >/dev/null 2>&1 && echo 0 || echo 0)
+          size=$(nm out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
+          truncate -s "$size" out/Image
+          ls -la out/Image
+
+      - name: Package the OCEAN shim
+        if: always()
+        run: |
+          mkdir -p out-ocean
+          cp -R shim/out/. out-ocean/ 2>/dev/null || true
+          # The ADT for the SDM710 board.
+          python3 tools/mkadt_ocean.py out-ocean/ocean.adt --highmem
+          ls -la out-ocean
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ocean-shim
+          path: out-ocean/
+          if-no-files-found: warn

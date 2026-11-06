@@ -11,6 +11,7 @@
 #include "mmu.h"
 #include "loader.h"
 #include "ufs.h"
+#include "emmc.h"
 
 #define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
@@ -386,6 +387,9 @@ void shim_main(uint64_t dtb)
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";
 	test_ufs();
+	/* Same for the eMMC: read-only, no writes to the card. */
+	stage = "emmc";
+	emmc_probe();
 	con_skip();
 	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
 	con_str("UFS", "probe done, reset in ~3 min");
